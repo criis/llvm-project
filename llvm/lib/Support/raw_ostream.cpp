@@ -956,16 +956,18 @@ bool raw_fd_stream::classof(const raw_ostream *OS) {
 //===----------------------------------------------------------------------===//
 
 int raw_socket_stream::MakeServerSocket(StringRef SocketPath, unsigned int MaxBacklog, std::error_code &EC) {
-  int MaybeWinsocket;
 
 #ifdef _WIN32
   SOCKET MaybeWinsocket = socket(AF_UNIX, SOCK_STREAM, 0);
-  Socket = sockopen_osfhandle(MaybeWinsocket, 0); // flags? https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/open-osfhandle?view=msvc-170
 #else
-  MaybeWinsocket = socket(AF_UNIX, SOCK_STREAM, 0);
+  int MaybeWinsocket = socket(AF_UNIX, SOCK_STREAM, 0);
 #endif // defined(_WIN32)
 
-  if (MaybeWinsocket == -1) { // Where is INVALID_SOCKET?
+#ifdef _WIN32
+  if (MaybeWinsocket == INVALID_SOCKET) {
+#else
+  if (MaybeWinsocket == -1) {
+#endif // _WIN32
     std::string Msg = "socket create error" + std::string(strerror(errno));
     std::perror(Msg.c_str());
     std::cout << Msg << std::endl;
@@ -993,19 +995,23 @@ int raw_socket_stream::MakeServerSocket(StringRef SocketPath, unsigned int MaxBa
     return -1;
   }
 #ifdef _WIN32
-  return sockopen_osfhandle(MaybeWinsocket, 0); // flags? https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/open-osfhandle?view=msvc-170
+  return _open_osfhandle(MaybeWinsocket, 0); // flags? https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/open-osfhandle?view=msvc-170
 #else
   return MaybeWinsocket;
 #endif // _WIN32
 }
 
-int GetSocketFD(StringRef SocketPath) {
-  int ConnectSocket;
-  if ((ConnectSocket = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
+int GetSocketFD(StringRef SocketPath, std::error_code &EC) {
+#ifdef _WIN32
+  SOCKET MaybeWinsocket = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (MaybeWinsocket == INVALID_SOCKET) {
+#else
+  int MaybeWinsocket = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (MaybeWinsocket == -1) {
+#endif // _WIN32
     std::string Msg = "socket create error" + std::string(strerror(errno));
     std::perror(Msg.c_str());
-    std::cout << Msg << std::endl;
-    // EC = std::make_error_code(std::errc::connection_aborted);
+    EC = std::make_error_code(std::errc::connection_aborted);
     return -1;
   }
 
@@ -1014,15 +1020,18 @@ int GetSocketFD(StringRef SocketPath) {
   Addr.sun_family = AF_UNIX;
   strncpy(Addr.sun_path, SocketPath.str().c_str(), sizeof(Addr.sun_path) - 1);
 
-  int status = connect(ConnectSocket, (struct sockaddr *)&Addr, sizeof(Addr));
+  int status = connect(MaybeWinsocket, (struct sockaddr *)&Addr, sizeof(Addr));
   if (status == -1) {
     std::string Msg = "socket connect error" + std::string(strerror(errno));
     std::perror(Msg.c_str());
-    std::cout << Msg << std::endl;
-    // EC = std::make_error_code(std::errc::connection_aborted);
+    EC = std::make_error_code(std::errc::connection_aborted);
     return -1;
   }
-  return ConnectSocket;
+#ifdef _WIN32
+  return _open_osfhandle(MaybeWinsocket, 0);
+#else
+  return MaybeWinsocket;
+#endif // _WIN32
 }
 
 static int ServerAccept(int FD) {
@@ -1045,7 +1054,7 @@ raw_socket_stream::raw_socket_stream(int SocketFD, StringRef SockPath, std::erro
 }
 
 // Client
-raw_socket_stream::raw_socket_stream(StringRef SockPath, std::error_code &EC) : raw_fd_ostream(GetSocketFD(SockPath), true, true, OStreamKind::OK_OStream ) {
+raw_socket_stream::raw_socket_stream(StringRef SockPath, std::error_code &EC) : raw_fd_ostream(GetSocketFD(SockPath, EC), true, true, OStreamKind::OK_OStream ) {
   SocketPath = SockPath;
   ShouldUnlink = false;
 }
@@ -1064,7 +1073,12 @@ Expected<std::string> raw_socket_stream::read_impl() {
   assert(Socket >= 0 && "Socket not found.");
 
   ssize_t n;
-  n = ::read(Socket, Buffer.data(), Buffer.size());
+#ifdef _WIN32
+  SOCKET MaybeWinsocket = _get_osfhandle(Socket);
+#else
+  int MaybeWinsocket = Socket;
+#endif // _WIN32
+  n = ::read(MaybeWinsocket, Buffer.data(), Buffer.size());
 
   if (n < 0) {
       std::string Msg = "Buffer read error: " + std::string(strerror(errno));
