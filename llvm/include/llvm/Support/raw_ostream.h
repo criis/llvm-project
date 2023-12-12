@@ -640,12 +640,25 @@ public:
 /// A raw stream for sockets reading/writing
 
 class raw_socket_stream;
+
+#ifdef _WIN32
+class WSABalancer {
+public:
+  WSABalancer();
+  ~WSABalancer();
+}
+#endif // _WIN32
+
 class ListeningSocket {
   int FD;
   std::string SocketPath;
   ListeningSocket(int SocketFD, StringRef SocketPath);
 
 public:
+#ifdef _WIN32
+  WSABalancer balancer;
+#endif // _WIN32
+
   static Expected<ListeningSocket> createUnix(
       StringRef SocketPath,
       int MaxBacklog = llvm::hardware_concurrency().compute_thread_count());
@@ -657,6 +670,9 @@ class raw_socket_stream : public raw_fd_stream {
   uint64_t current_pos() const override { return 0; }
 
 public:
+#ifdef _WIN32
+  WSABalancer balancer;
+#endif // _WIN32
   raw_socket_stream(int SocketFD);
   /// Create a \p raw_socket_stream connected to the Unix domain socket at \p
   /// SocketPath.

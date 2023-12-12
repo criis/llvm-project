@@ -963,6 +963,21 @@ bool raw_fd_stream::classof(const raw_ostream *OS) {
 //  raw_socket_stream
 //===----------------------------------------------------------------------===//
 
+#ifdef _WIN32
+WSABalancer::WSABalancer() {
+  WSADATA WsaData = {0};
+  if (WSAStartup(MAKEWORD(2, 2), &WsaData) != 0) {
+    WSACleanup();
+    llvm::report_fatal_error("WSAStartup failed");
+  }
+}
+
+WSABalancer::~WSABalancer() {
+  WSACleanup();
+}
+
+#endif // _WIN32
+
 std::error_code getLastSocketErrorCode() {
 #ifdef _WIN32
   return std::error_code(::WSAGetLastError(), std::system_category());
@@ -983,13 +998,7 @@ Expected<ListeningSocket> ListeningSocket::createUnix(StringRef SocketPath,
                                                       int MaxBacklog) {
 
 #ifdef _WIN32
-  WSADATA WsaData = {0};
-  if (WSAStartup(MAKEWORD(2, 2), &WsaData) != 0) {
-    llvm::Error E = llvm::make_error<StringError>(getLastSocketErrorCode(),
-                                                  "WSAStartup failed");
-    WSACleanup();
-    return E;
-  }
+  WSABalancer Balancer();
   SOCKET MaybeWinsocket = socket(AF_UNIX, SOCK_STREAM, 0);
   if (MaybeWinsocket == INVALID_SOCKET) {
 #else
@@ -1022,6 +1031,9 @@ Expected<ListeningSocket> ListeningSocket::createUnix(StringRef SocketPath,
   UnixSocket = MaybeWinsocket;
 #endif // _WIN32
   ListeningSocket ListenSocket(UnixSocket, SocketPath);
+#ifdef _WIN32
+  ListenSocket.balancer = Balancer;
+#endif
   return ListenSocket;
 }
 
@@ -1045,22 +1057,11 @@ ListeningSocket::~ListeningSocket() {
     return;
   ::close(FD);
   unlink(SocketPath.c_str());
-#ifdef _WIN32
-  WSACleanup();
-#endif // _WIN32
 }
 
 // Expected?
 Expected<int> GetSocketFD(StringRef SocketPath) {
 #ifdef _WIN32
-  WSADATA WsaData = {0};
-  if (WSAStartup(MAKEWORD(2, 2), &WsaData) != 0) {
-    llvm::Error E = llvm::make_error<StringError>(getLastSocketErrorCode(),
-                                                  "WSAStartup failed");
-    WSACleanup();
-    return E;
-  }
-
   SOCKET MaybeWinsocket = socket(AF_UNIX, SOCK_STREAM, 0);
   if (MaybeWinsocket == INVALID_SOCKET) {
 #else
@@ -1093,10 +1094,18 @@ raw_socket_stream::raw_socket_stream(int SocketFD)
 
 Expected<std::unique_ptr<raw_socket_stream>>
 raw_socket_stream::createConnectedUnix(StringRef SocketPath) {
+
+#ifdef _WIN32
+  WSABalancer Balancer();
+#endif // _WIN32
   Expected<int> FD = GetSocketFD(SocketPath);
   if (!FD)
     return FD.takeError();
-  return std::make_unique<raw_socket_stream>(*FD);
+  std::unique_ptr<raw_socket_stream> RSS = std::make_unique<raw_socket_stream>(*FD);
+#ifdef _WIN32
+  RSS.balancer = Balancer;
+#endif // _WIN32
+  return RSS;
 }
 
 raw_socket_stream::~raw_socket_stream() {}
